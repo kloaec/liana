@@ -1,0 +1,32 @@
+[package]
+name = "liana-qr"
+version = "0.1.0"
+edition = "2021"
+description = "Stopgap QR-code bridge between Liana and airgapped signing devices"
+publish = false
+
+[[bin]]
+name = "liana-qr"
+path = "src/main.rs"
+
+[features]
+default = ["camera"]
+# Webcam scanning. Without it the bridge can still show QR codes and decode screenshots.
+camera = ["dep:nokhwa"]
+
+[dependencies]
+liana-ui = { workspace = true }
+miniscript = { workspace = true, features = ["base64"] }
+iced = { workspace = true, default-features = false, features = ["tokio", "svg", "qr_code", "image", "lazy", "wgpu", "advanced", "tiny-skia", "x11", "wayland"] }
+tokio = { workspace = true, features = ["rt", "time"] }
+rfd = { workspace = true }
+base64 = { workspace = true }
+flate2 = { workspace = true, features = ["rust_backend"] }
+ur = "0.5"
+ciborium = "0.2"
+base32 = "0.5"
+serde_json = { workspace = true }
+rqrr = "0.11"
+qrcode = { version = "0.13", default-features = false }
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+nokhwa = { version = "0.10", features = ["input-native"], optional = true }
