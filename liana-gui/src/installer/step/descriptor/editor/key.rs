@@ -112,6 +112,9 @@ pub enum SelectKeySourceMessage {
     SelectEnterXpub,
     PasteXpub,
     Xpub(String),
+    /// Scan the key of a QR code device, see `crate::qr_bridge`.
+    ScanQrXpub,
+    QrXpub(Result<Option<String>, String>),
     SelectGenerateHotKey,
     FetchFromHotSigner(ChildNumber),
     SelectEnterSafetyNetToken,
@@ -196,6 +199,7 @@ pub struct SelectKeySource {
     form_account: Option<ChildNumber>,
 
     options_collapsed: bool,
+    qr_bridge: bool,
 }
 
 impl SelectKeySource {
@@ -207,8 +211,10 @@ impl SelectKeySource {
         keys: HashMap<Fingerprint, (Vec<(usize, usize)>, Key)>,
         accounts: HashMap<Fingerprint, ChildNumber>,
         hot_signer: Arc<Mutex<Signer>>,
+        qr_bridge: bool,
     ) -> Self {
         Self {
+            qr_bridge,
             network,
             taproot,
             keys,
@@ -693,6 +699,28 @@ impl SelectKeySource {
         let _ = self.on_next();
         self.focus_alias()
     }
+    fn on_scan_qr_xpub(&mut self) -> Task<Message> {
+        self.processing = true;
+        self.import_xpub_error = None;
+        Task::perform(crate::qr_bridge::scan_xpub(self.network), |res| {
+            Self::route(SelectKeySourceMessage::QrXpub(res))
+        })
+    }
+    fn on_qr_xpub(&mut self, res: Result<Option<String>, String>) -> Task<Message> {
+        self.processing = false;
+        match res {
+            // Show the key in the xpub form, which checks it like a pasted one.
+            Ok(Some(xpub)) => {
+                self.focus = Focus::EnterXpub;
+                self.on_update_xpub(xpub)
+            }
+            Ok(None) => Task::none(),
+            Err(e) => {
+                self.import_xpub_error = Some(e);
+                Task::none()
+            }
+        }
+    }
     fn on_paste_xpub(&mut self) -> Task<Message> {
         clipboard::read().map(|t| {
             Self::route(match t {
@@ -1088,12 +1116,17 @@ impl SelectKeySource {
             )
         });
 
+        let scan_qr_xpub = (self.qr_bridge && safety_net_token.is_none()).then(|| {
+            modal::scan_qr_xpub_entry(Some(|| Self::route(SelectKeySourceMessage::ScanQrXpub)))
+        });
+
         let mut col = Column::new()
             .push(option_section)
             .spacing(modal::V_SPACING)
             .width(modal::BTN_W);
         if collapsed {
             col = col
+                .push_maybe(scan_qr_xpub)
                 .push_maybe(load_key)
                 .push_maybe(paste_xpub)
                 .push_maybe(hot_signer)
@@ -1253,6 +1286,8 @@ impl super::DescriptorEditModal for SelectKeySource {
                 SelectKeySourceMessage::SelectEnterXpub => self.on_select_enter_xpub(),
                 SelectKeySourceMessage::PasteXpub => self.on_paste_xpub(),
                 SelectKeySourceMessage::Xpub(xpub) => self.on_update_xpub(xpub),
+                SelectKeySourceMessage::ScanQrXpub => self.on_scan_qr_xpub(),
+                SelectKeySourceMessage::QrXpub(res) => self.on_qr_xpub(res),
                 SelectKeySourceMessage::SelectGenerateHotKey => self.on_select_generate_hot_key(),
                 SelectKeySourceMessage::FetchFromHotSigner(account) => {
                     self.on_fetch_from_hotsigner(account)

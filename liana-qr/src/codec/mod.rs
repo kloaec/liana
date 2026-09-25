@@ -91,24 +91,20 @@ pub enum Animation {
 }
 
 impl Animation {
-    pub fn new(
-        payload: Payload<'_>,
-        transport: Transport,
-        density: Density,
-    ) -> Result<Self, Error> {
+    pub fn new(payload: Payload<'_>, transport: Transport, density: Density) -> Self {
         let chars = density.chars();
-        Ok(match (transport, payload) {
+        match (transport, payload) {
             (Transport::Ur, Payload::Psbt(psbt)) => Animation::Ur(ur::Animation::new(
                 &psbt.serialize(),
                 ur::UrType::CryptoPsbt,
                 // Minimal bytewords take two characters per byte, plus the part header.
                 chars / 2 - 20,
-            )?),
+            )),
             (Transport::Ur, Payload::Text(text)) => Animation::Ur(ur::Animation::new(
                 text.as_bytes(),
                 ur::UrType::Bytes,
                 chars / 2 - 20,
-            )?),
+            )),
             (Transport::Bbqr, Payload::Psbt(psbt)) => Animation::Frames {
                 frames: bbqr::encode(&psbt.serialize(), bbqr::FileType::Psbt, chars),
                 next: 0,
@@ -125,7 +121,7 @@ impl Animation {
                 frames: specter::encode(text, chars),
                 next: 0,
             },
-        })
+        }
     }
 
     /// Number of distinct frames the device needs to see (at least).
@@ -306,10 +302,6 @@ impl ExtendedKey {
             NetworkKind::Test => 1,
         }
     }
-
-    pub fn is_mainnet(&self) -> bool {
-        self.xpub.network == NetworkKind::Main
-    }
 }
 
 /// Keys found in a scanned text: a `[fp/path]xpub` expression (also with SLIP-132 prefixes such as
@@ -488,8 +480,7 @@ mod tests {
     fn scanner_detects_transports() {
         let psbt = Psbt::from_str(TEST_PSBT).unwrap();
         for transport in [Transport::Ur, Transport::Bbqr, Transport::Specter] {
-            let mut animation =
-                Animation::new(Payload::Psbt(&psbt), transport, Density::Low).unwrap();
+            let mut animation = Animation::new(Payload::Psbt(&psbt), transport, Density::Low);
             assert!(animation.frame_count() > 1, "{transport:?}");
             let mut scanner = Scanner::default();
             let mut result = None;

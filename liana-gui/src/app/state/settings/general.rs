@@ -57,6 +57,7 @@ pub struct GeneralSettingsState {
     new_price_setting: PriceSetting,
     currencies: Vec<Currency>,
     error: Option<Error>,
+    qr_bridge: bool,
 }
 
 impl From<GeneralSettingsState> for Box<dyn State> {
@@ -66,13 +67,14 @@ impl From<GeneralSettingsState> for Box<dyn State> {
 }
 
 impl GeneralSettingsState {
-    pub fn new(wallet: Arc<Wallet>) -> Self {
+    pub fn new(wallet: Arc<Wallet>, qr_bridge: bool) -> Self {
         let new_price_setting = wallet_price_setting_or_default(&wallet);
         Self {
             wallet,
             new_price_setting,
             currencies: Vec::new(),
             error: None,
+            qr_bridge,
         }
     }
 }
@@ -83,6 +85,7 @@ impl State for GeneralSettingsState {
             cache,
             &self.new_price_setting,
             &self.currencies,
+            self.qr_bridge,
             self.error.as_ref(),
         )
     }
@@ -117,6 +120,15 @@ impl State for GeneralSettingsState {
         message: Message,
     ) -> Task<Message> {
         match message {
+            Message::View(view::Message::Settings(view::SettingsMessage::EnableQrBridge(
+                enabled,
+            ))) => {
+                match crate::qr_bridge::set_enabled(&cache.datadir_path, enabled) {
+                    Ok(()) => self.qr_bridge = enabled,
+                    Err(e) => self.error = Some(Error::Unexpected(e)),
+                }
+                Task::none()
+            }
             Message::WalletUpdated(res) => {
                 match res {
                     Ok(wallet) => {

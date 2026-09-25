@@ -34,6 +34,8 @@ pub enum Tile {
     Paste,
     EnterToken,
     Mnemonic,
+    /// QR code signing device, used by the stopgap QR bridge.
+    QrDevice,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -204,6 +206,7 @@ tile_specs! {
     (Paste, paste_icon, Neutral, DEFAULT),
     (EnterToken, enter_box_icon, Neutral, DEFAULT),
     (Mnemonic, edit_icon, Neutral, DEFAULT),
+    (QrDevice, qr_icon, Neutral, DEFAULT),
 }
 
 fn tile_tone(theme: &theme::Theme, tone: TileStyle) -> theme::palette::Tile {

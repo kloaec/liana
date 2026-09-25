@@ -588,6 +588,9 @@ pub mod global {
     pub struct GlobalSettings {
         pub bitbox: Option<BitboxSettings>,
         pub window_config: Option<WindowConfig>,
+        /// Whether QR code signing devices are enabled, see `crate::qr_bridge`.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        pub qr_bridge: Option<bool>,
     }
 
     impl GlobalSettings {
@@ -625,6 +628,18 @@ pub mod global {
             bitbox: &BitboxSettings,
         ) -> Result<(), String> {
             Self::update(path, |s| s.bitbox = Some(bitbox.clone()), true)
+        }
+
+        pub fn load_qr_bridge(path: &PathBuf) -> bool {
+            let mut ret = None;
+            if let Err(e) = Self::update(path, |s| ret = s.qr_bridge, false) {
+                tracing::error!("Failed to load QR bridge setting: {e}");
+            }
+            ret.unwrap_or(false)
+        }
+
+        pub fn update_qr_bridge(path: &PathBuf, enabled: bool) -> Result<(), String> {
+            Self::update(path, |s| s.qr_bridge = Some(enabled), true)
         }
 
         pub fn update<F>(path: &PathBuf, mut update: F, mut write: bool) -> Result<(), String>
@@ -666,6 +681,7 @@ pub mod global {
             if !exists
                 && global_settings.bitbox.is_none()
                 && global_settings.window_config.is_none()
+                && global_settings.qr_bridge.is_none()
             {
                 write = false;
             }

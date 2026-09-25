@@ -103,6 +103,7 @@ pub enum SpendTxMessage {
     Confirm,
     Cancel,
     SelectHotSigner,
+    SelectQrSigner,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -130,6 +131,9 @@ pub enum SettingsMessage {
     Save,
     GeneralSection,
     Fiat(FiatMessage),
+    EnableQrBridge(bool),
+    RegisterOnQrDevice,
+    QrDeviceRegistered(Result<bool, String>),
 }
 
 impl From<SettingsMessage> for Message {

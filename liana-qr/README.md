@@ -1,31 +1,31 @@
 # Liana QR bridge
 
-A small companion app to use QR-code signing devices with Liana, until Liana supports them natively.
+Stopgap support for QR code signing devices in Liana, until Liana supports them natively.
 
-It is a **stopgap**: it lives in its own crate, talks to Liana only through files and the clipboard,
-and changes nothing in `liana-gui`. When native QR support lands, delete this directory and its line in
-the workspace `Cargo.toml`.
+The QR code work (camera, animated codes, device formats) lives in this separate app. Liana starts it
+for a single action and reads the result back, so users never copy or paste anything. The Liana side
+is small, and nothing changes unless the user turns it on.
 
-```
-cargo run --release -p liana-qr              # home screen
-cargo run --release -p liana-qr -- tx.psbt   # straight to signing this PSBT
-```
+## For users
 
-## What it does
+1. Turn on **Settings > General > QR code signing devices**. It is off by default.
+2. Liana then shows a **QR code device** option:
+   - **Sign:** in the transaction's *Sign* dialog, choose *Sign with a QR code device*.
+   - **Register the wallet:** in the installer's registration step, or in *Settings > Wallet >
+     Register on device*.
+   - **Import a key:** when creating a wallet, under *Set key > Other options > Scan the key of a
+     QR code device*.
+3. The bridge window opens:
+   - It shows the QR code to scan with your device, or opens the camera to read the device's answer.
+   - The result goes straight back to Liana, and the window closes.
+   - *Previous* on the first screen, or closing the window, cancels.
 
-| Flow | In Liana | In the bridge |
-|---|---|---|
-| **Sign a transaction** | Export the PSBT (file) or copy it. | Shows it as an animated QR code, scans the signed answer back, and merges the signatures into the original PSBT. Save the file and use *Import* on the transaction in Liana. *Sign with another device* chains several QR signers. |
-| **Register the wallet** | Copy the descriptor (Settings > Wallet), or export it. | Shows the descriptor in the device's registration format. |
-| **Import a key** | Paste the key when creating the wallet. | Scans the device's extended public key (text, UR `crypto-account`/`crypto-hdkey`, Coldcard JSON, SLIP-132 `Zpub`/`Vpub`...) and copies it as `[fingerprint/path]xpub`. |
-| **Verify an address** | Show the receive address QR code. | Nothing needed: the devices scan Liana's QR code directly. |
+Address verification needs nothing: the devices scan the receive address QR code Liana already shows.
 
-You can also load a picture of the device's screen instead of using the webcam.
+The *Signing device* selector picks the QR format. The bridge remembers it, and you can switch it on
+the QR screen if a device can't read the codes.
 
 ## Devices
-
-The *Signing device* selector picks the QR format. You can switch it on the QR screen if a device can't
-read the codes.
 
 | Device | Transactions | Wallet registration | Notes |
 |---|---|---|---|
@@ -36,25 +36,62 @@ read the codes.
 | Other (UR / BBQr) | UR or BBQr | UR `bytes` or BBQr `U` | |
 
 Scanning detects UR, BBQr, `pMofN` and single-QR base64/hex automatically, whatever device is selected.
+Keys are accepted as text `[fingerprint/path]xpub`, UR `crypto-account`/`crypto-hdkey`, Coldcard JSON
+or SLIP-132 (`Zpub`, `Vpub`...), and only for the wallet's network.
 
 **Blockstream Jade is not supported**: it can't register a miniscript descriptor over QR, only
 multisig files.
 
+## How Liana talks to the bridge
+
+Liana starts `liana-qr <request>` with piped stdin and stdout, and waits for it to exit. See
+`src/protocol.rs` for the bridge side and `liana-gui/src/qr_bridge.rs` for the Liana side.
+
+| Request | stdin | stdout on success |
+|---|---|---|
+| `sign` | base64 PSBT | the PSBT with the device's signatures merged in |
+| `register --name <wallet name>` | descriptor | `registered` |
+| `xpub --network <bitcoin\|testnet\|signet\|regtest>` | nothing | `[fingerprint/path]xpub` |
+
+- Empty output means the user cancelled.
+- Errors are shown and retried in the bridge, so Liana has nothing to report.
+- Liana looks for the `liana-qr` executable next to its own, then on the `PATH`.
+- Liana treats the answers like a USB device's:
+  - Signatures are merged and saved through the daemon, so it works with local and Liana Connect
+    wallets alike.
+  - Keys go through the usual xpub checks.
+
+## Removing it
+
+Once Liana supports QR devices natively:
+
+1. Delete this directory and its line in the workspace `Cargo.toml`.
+2. Delete `liana-gui/src/qr_bridge.rs` and its call sites (`grep -rn qr_bridge liana-gui`):
+   - the `qr_bridge` field of the global settings,
+   - the General settings toggle,
+   - the entries in the sign, registration and key dialogs.
+3. Delete `Tile::QrDevice`, `qr_device_entry` and `scan_qr_xpub_entry` in liana-ui.
+4. Delete the `qr-bridge-*` and `settings-qr-bridge*` strings.
+
 ## Building
 
+```
+cargo build --release -p liana-qr   # then ship target/release/liana-qr next to liana-gui
+```
+
 - **Camera:** the `camera` feature (default) uses `nokhwa`: V4L2 on Linux, AVFoundation on macOS
-  (the terminal or app bundle needs the camera permission), Media Foundation on Windows. Build with
-  `--no-default-features` to leave it out; only picture loading remains.
-- **QR codes:** drawn as pixel-exact images rather than with iced's QR widget, so modules stay crisp for
-  cameras on every renderer. Frames change every 250 ms. *QR density* trades the number of frames
-  against how easily a camera reads them.
+  (the app needs the camera permission), Media Foundation on Windows. Build with
+  `--no-default-features` to leave it out; only loading a picture of the device's screen remains.
+- **QR codes:** drawn as pixel-exact images, so modules stay crisp for cameras on every renderer.
+  Frames change every 250 ms. *QR density* trades the number of frames against how easily a camera
+  reads them.
 
 ## Layout
 
+- `protocol.rs`: requests from Liana and their answers.
 - `codec/`: UR (fountain-coded), BBQr and `pMofN` transports; conversion of scanned keys.
 - `psbt.rs`: signature merging.
 - `scan.rs`: webcam capture and QR decoding (`rqrr`).
-- `device.rs`: per-device formats and hints.
+- `device.rs`: per-device formats and hints; the last device used.
 - `app.rs`, `view.rs`: the iced app, built from `liana-ui` components (installer layout, list entries,
-  buttons, cards). Its few specific widgets stay in `view.rs` so removing the crate leaves nothing behind
-  in `liana-ui`.
+  buttons, cards).

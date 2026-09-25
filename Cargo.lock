@@ -3626,6 +3626,7 @@ dependencies = [
  "base32 0.5.1",
  "base64 0.21.7",
  "ciborium",
+ "dirs",
  "flate2",
  "iced",
  "image",

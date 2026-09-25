@@ -583,6 +583,7 @@ pub fn register_descriptor<'a>(
     chosen_hw: Option<usize>,
     done: bool,
     created_desc: bool,
+    qr_bridge: bool,
 ) -> Element<'a, Message> {
     let descriptor_str = descriptor.to_string();
     let displayed_descriptor =
@@ -626,7 +627,15 @@ pub fn register_descriptor<'a>(
         .spacing(10)
         .into()
     };
-    let signing_devices = column![devices_title, devices]
+    // Stopgap support for QR code devices, see `crate::qr_bridge`.
+    let qr_device = qr_bridge.then(|| {
+        Container::new(modal::qr_device_entry(
+            t!("qr-bridge-register"),
+            (!processing).then_some(|| Message::RegisterOnQrDevice),
+        ))
+        .width(EntryWidth::Standard)
+    });
+    let signing_devices = column![devices_title, devices, qr_device]
         .align_x(Alignment::Center)
         .spacing(10)
         .width(EntryWidth::Standard);

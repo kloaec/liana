@@ -11,7 +11,7 @@ use liana_ui::{
     component::{
         badge::Tile,
         button::{EntryWidth, STANDARD_ENTRY_WIDTH},
-        card, form,
+        card,
         installer::{self, LayoutConfig, NavBar},
         list, pick_list, text,
     },
@@ -23,8 +23,8 @@ use liana_ui::{
 use miniscript::bitcoin::Network;
 
 use crate::{
-    app::{AnimatedQr, App, Flow, Key, Message, Register, ScanState, Screen, Sign, QR_SIZE},
-    codec::Density,
+    app::{AnimatedQr, App, Message, ScanState, Screen, QR_SIZE},
+    codec::{Density, ExtendedKey},
     device::Device,
 };
 
@@ -32,57 +32,18 @@ const CONTENT_WIDTH: f32 = 800.0;
 const PREVIEW_WIDTH: f32 = 480.0;
 
 pub fn view(app: &App) -> Element<'_, Message> {
-    let (title, progress, previous, content) = match &app.screen {
-        Screen::Home => (String::new(), (0, 0), None, home(app.device)),
-        Screen::Sign(sign) => {
-            let (step, content) = match sign {
-                Sign::Load { error } => (1, sign_load(error.as_deref())),
-                Sign::Show { qr, .. } => (2, sign_show(app, qr)),
-                Sign::Scan { scan, .. } => (3, sign_scan(scan)),
-                Sign::Done {
-                    added,
-                    saved,
-                    error,
-                    ..
-                } => (4, sign_done(*added, saved.as_deref(), error.as_deref())),
-            };
-            (
-                "Sign a transaction".to_string(),
-                (step, 4),
-                Some(Message::Previous),
-                content,
-            )
-        }
-        Screen::Register(register) => {
-            let (step, content) = match register {
-                Register::Edit { name, descriptor } => (1, register_edit(name, descriptor)),
-                Register::Show { qr, .. } => (2, register_show(app, qr)),
-            };
-            (
-                "Register the wallet".to_string(),
-                (step, 2),
-                Some(Message::Previous),
-                content,
-            )
-        }
-        Screen::Key(key) => {
-            let (step, content) = match key {
-                Key::Scan(scan) => (1, key_scan(app.device, scan)),
-                Key::Done { keys, copied } => (2, key_done(keys, *copied)),
-            };
-            (
-                "Import a key".to_string(),
-                (step, 2),
-                Some(Message::Previous),
-                content,
-            )
-        }
+    let (title, progress, content) = match &app.screen {
+        Screen::SignShow { qr, .. } => ("Sign with a QR code device", (1, 2), sign_show(app, qr)),
+        Screen::SignScan { scan, .. } => ("Sign with a QR code device", (2, 2), sign_scan(scan)),
+        Screen::Register { qr, .. } => ("Register on a QR code device", (0, 0), register(app, qr)),
+        Screen::KeyScan { scan, .. } => ("Import a key", (0, 0), key_scan(app.device, scan)),
+        Screen::KeyChoose { keys } => ("Import a key", (0, 0), key_choose(keys)),
     };
-
+    // On the first step, "previous" goes back to Liana.
     let nav_bar = NavBar::StepTitle {
         progress,
-        title,
-        previous_message: previous,
+        title: title.to_string(),
+        previous_message: Some(Message::Previous),
     };
     installer::layout(
         LayoutConfig {
@@ -95,91 +56,6 @@ pub fn view(app: &App) -> Element<'_, Message> {
         },
         column![content, Space::with_height(VSpacing::XXL)],
     )
-}
-
-fn home<'a>(device: Device) -> Element<'a, Message> {
-    let intro = installer::screen_intro(
-        "QR signing bridge",
-        Some(installer::intro_description(
-            "Use an airgapped signing device with Liana. The bridge shows your device QR codes \
-             and reads its answers, then hands the result back to Liana through a file or the \
-             clipboard.",
-        )),
-        false,
-    );
-    let entries = column![
-        list::entry_action(
-            Tile::Device,
-            "Sign a transaction",
-            Some("Show a PSBT exported from Liana, then scan it back signed"),
-            None,
-            EntryWidth::Standard,
-            Some(Message::Open(Flow::Sign)),
-        ),
-        list::entry_action(
-            Tile::Wallet,
-            "Register the wallet on a device",
-            Some("Show the wallet descriptor so the device can verify spends and addresses"),
-            None,
-            EntryWidth::Standard,
-            Some(Message::Open(Flow::Register)),
-        ),
-        list::entry_action(
-            Tile::KeyInternal,
-            "Import a key from a device",
-            Some("Scan an extended public key and copy it for Liana's wallet creation"),
-            None,
-            EntryWidth::Standard,
-            Some(Message::Open(Flow::Key)),
-        ),
-    ]
-    .spacing(VSpacing::S)
-    .align_x(Alignment::Center);
-
-    column![
-        intro,
-        ui::device_picker(device, None),
-        entries,
-        Container::new(card::info(
-            "To check a receive address, show its QR code in Liana and scan it with the device.",
-        ))
-        .width(STANDARD_ENTRY_WIDTH),
-    ]
-    .spacing(VSpacing::XXL)
-    .align_x(Alignment::Center)
-    .into()
-}
-
-fn sign_load<'a>(error: Option<&str>) -> Element<'a, Message> {
-    column![
-        ui::prompt("Load the transaction to sign"),
-        ui::caption(
-            "In Liana, open the transaction and export it (Export > PSBT), or copy the PSBT.",
-        ),
-        error.map(ui::error),
-        column![
-            list::entry_action(
-                Tile::Import,
-                "Load a PSBT file",
-                Some("The .psbt file exported from Liana"),
-                None,
-                EntryWidth::Standard,
-                Some(Message::LoadPsbtFile),
-            ),
-            list::entry_action(
-                Tile::Paste,
-                "Paste a PSBT",
-                Some("A base64 PSBT from the clipboard"),
-                None,
-                EntryWidth::Standard,
-                Some(Message::PastePsbt),
-            ),
-        ]
-        .spacing(VSpacing::S),
-    ]
-    .spacing(VSpacing::XL)
-    .align_x(Alignment::Center)
-    .into()
 }
 
 fn sign_show<'a>(app: &'a App, qr: &'a AnimatedQr) -> Element<'a, Message> {
@@ -199,7 +75,10 @@ fn sign_show<'a>(app: &'a App, qr: &'a AnimatedQr) -> Element<'a, Message> {
 fn sign_scan(scan: &ScanState) -> Element<'_, Message> {
     column![
         ui::prompt("Show the signed transaction to the camera"),
-        ui::caption("Once signed, the device displays the transaction as a QR code."),
+        ui::caption(
+            "Once signed, the device displays the transaction as a QR code. The signatures go \
+             back to Liana as soon as it is read.",
+        ),
         ui::scanner(scan),
     ]
     .spacing(VSpacing::XL)
@@ -207,91 +86,7 @@ fn sign_scan(scan: &ScanState) -> Element<'_, Message> {
     .into()
 }
 
-fn sign_done<'a>(
-    added: usize,
-    saved: Option<&std::path::Path>,
-    error: Option<&str>,
-) -> Element<'a, Message> {
-    let signatures = if added == 1 {
-        "1 signature added".to_string()
-    } else {
-        format!("{added} signatures added")
-    };
-    let saved = saved.map(|path| ui::caption(format!("Saved to {}", path.display())));
-    column![
-        ui::success(signatures),
-        ui::caption(
-            "Save the signed PSBT, then import it in Liana: open the transaction and choose \
-             Import. Liana merges the new signatures.",
-        ),
-        saved,
-        error.map(ui::error),
-        row![
-            ui::secondary("Copy PSBT", Some(Message::CopyPsbt)),
-            ui::primary("Save PSBT file", Some(Message::SavePsbt)),
-        ]
-        .spacing(VSpacing::M),
-        list::entry_action(
-            Tile::Device,
-            "Sign with another device",
-            Some("Show the transaction again, with these signatures, to the next signer"),
-            None,
-            EntryWidth::Standard,
-            Some(Message::SignWithAnotherDevice),
-        ),
-        ui::secondary("Done", Some(Message::Finish)),
-    ]
-    .spacing(VSpacing::XL)
-    .align_x(Alignment::Center)
-    .into()
-}
-
-fn register_edit<'a>(
-    name: &'a form::Value<String>,
-    descriptor: &'a form::Value<String>,
-) -> Element<'a, Message> {
-    let ready = name.valid && descriptor.valid && !descriptor.value.is_empty();
-    column![
-        ui::prompt("Enter the wallet descriptor"),
-        ui::caption(
-            "In Liana, go to Settings > Wallet and copy the descriptor, or export it from \
-             Settings > Import/Export.",
-        ),
-        Container::new(
-            column![
-                form::Form::new("Wallet name", name, Message::NameEdited)
-                    .label("Wallet name")
-                    .warning("Enter a name without '&'")
-                    .padding(10),
-                form::Form::new_trimmed("Descriptor", descriptor, Message::DescriptorEdited)
-                    .label("Descriptor")
-                    .warning(
-                        descriptor
-                            .warning
-                            .clone()
-                            .unwrap_or_else(|| "This is not a valid descriptor".to_string()),
-                    )
-                    .padding(10),
-            ]
-            .spacing(VSpacing::L),
-        )
-        .width(STANDARD_ENTRY_WIDTH),
-        list::entry_action(
-            Tile::Import,
-            "Load a descriptor file",
-            Some("The descriptor file exported from Liana"),
-            None,
-            EntryWidth::Standard,
-            Some(Message::LoadDescriptorFile),
-        ),
-        ui::primary("Show on screen", ready.then_some(Message::ShowRegistration)),
-    ]
-    .spacing(VSpacing::XL)
-    .align_x(Alignment::Center)
-    .into()
-}
-
-fn register_show<'a>(app: &'a App, qr: &'a AnimatedQr) -> Element<'a, Message> {
+fn register<'a>(app: &'a App, qr: &'a AnimatedQr) -> Element<'a, Message> {
     column![
         ui::prompt("Scan this with your device"),
         ui::format_pickers(app.device, app.density),
@@ -301,7 +96,7 @@ fn register_show<'a>(app: &'a App, qr: &'a AnimatedQr) -> Element<'a, Message> {
         ui::caption(
             "Check on the device that every key and timelock matches the wallet in Liana.",
         ),
-        ui::primary("Done", Some(Message::Finish)),
+        ui::primary("The wallet is registered", Some(Message::Registered)),
     ]
     .spacing(VSpacing::L)
     .align_x(Alignment::Center)
@@ -320,7 +115,7 @@ fn key_scan(device: Device, scan: &ScanState) -> Element<'_, Message> {
     .into()
 }
 
-fn key_done(keys: &[crate::codec::ExtendedKey], copied: Option<usize>) -> Element<'_, Message> {
+fn key_choose(keys: &[ExtendedKey]) -> Element<'_, Message> {
     let entries =
         keys.iter()
             .enumerate()
@@ -329,22 +124,18 @@ fn key_done(keys: &[crate::codec::ExtendedKey], copied: Option<usize>) -> Elemen
                 if !key.script.is_empty() {
                     notes.push(key.script.clone());
                 }
-                if !key.is_mainnet() {
-                    notes.push("testnet".into());
-                }
                 let title = match key.liana_account() {
                     Some(0) => "Liana key".to_string(),
                     Some(account) => format!("Liana key, account #{account}"),
                     None => "Key with a non-standard path".to_string(),
                 };
-                let trailing = (copied == Some(i)).then(|| ui::caption("Copied"));
                 col.push(list::entry_action(
-                    Tile::KeyExternal,
+                    Tile::KeyInternal,
                     title,
                     Some(notes.join(" · ")),
-                    trailing,
+                    None,
                     EntryWidth::Standard,
-                    Some(Message::CopyKey(i)),
+                    Some(Message::SelectKey(i)),
                 ))
             });
     let non_standard = keys.iter().all(|k| k.liana_account().is_none()).then(|| {
@@ -354,14 +145,10 @@ fn key_done(keys: &[crate::codec::ExtendedKey], copied: Option<usize>) -> Elemen
         )
     });
     column![
-        ui::prompt("Copy the key"),
-        ui::caption(
-            "Click a key to copy it, then paste it in Liana where the wallet creation asks for \
-             the key's extended public key.",
-        ),
+        ui::prompt("Choose the key to use"),
+        ui::caption("The device shared several keys."),
         non_standard,
         entries,
-        ui::secondary("Done", Some(Message::Finish)),
     ]
     .spacing(VSpacing::XL)
     .align_x(Alignment::Center)
@@ -403,20 +190,6 @@ mod ui {
             .padding(card::CardPadding::Soft)
             .style(theme::card::soft_warning)
             .into()
-    }
-
-    pub fn success<'a>(message: String) -> Element<'a, Message> {
-        Container::new(
-            row![
-                liana_ui::icon::check_icon().style(theme::text::success),
-                text::new::b3_medium(message),
-            ]
-            .spacing(VSpacing::S)
-            .align_y(Alignment::Center),
-        )
-        .padding(card::CardPadding::Soft)
-        .style(theme::card::success)
-        .into()
     }
 
     pub fn device_picker<'a>(device: Device, width: Option<f32>) -> Element<'a, Message> {

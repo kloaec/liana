@@ -59,6 +59,9 @@ pub enum Message {
     HardwareWallets(HardwareWalletMessage),
     HardwareWalletUpdate,
     WalletRegistered(Result<(Fingerprint, Option<[u8; 32]>), Error>),
+    /// Register the descriptor on a QR code device, see `crate::qr_bridge`.
+    RegisterOnQrDevice,
+    QrDeviceRegistered(Result<bool, String>),
     MnemonicWord(usize, String),
     ImportMnemonic(bool),
     RedeemNextKey,

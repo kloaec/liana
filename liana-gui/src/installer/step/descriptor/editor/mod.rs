@@ -66,6 +66,8 @@ pub struct DefineDescriptor {
     error: Option<String>,
     processing: bool,
     compiled: Option<LianaDescriptor>,
+    /// Whether to offer QR code devices, see `crate::qr_bridge`.
+    qr_bridge: bool,
 }
 
 impl DefineDescriptor {
@@ -74,6 +76,7 @@ impl DefineDescriptor {
             network,
             use_taproot: false,
             modal: None,
+            qr_bridge: false,
 
             signer,
             error: None,
@@ -218,6 +221,7 @@ impl DefineDescriptor {
             keys,
             self.accounts.clone(),
             self.signer.clone(),
+            self.qr_bridge,
         )
     }
 }
@@ -225,6 +229,7 @@ impl DefineDescriptor {
 impl Step for DefineDescriptor {
     fn load_context(&mut self, ctx: &Context) {
         self.load_template(ctx.descriptor_template);
+        self.qr_bridge = crate::qr_bridge::is_enabled(&ctx.liana_directory);
         // Drop any transient state from a previous visit (failed compile,
         // in-flight task we navigated away from, stale mailbox).
         self.error = None;

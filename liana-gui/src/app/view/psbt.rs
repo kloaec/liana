@@ -496,6 +496,7 @@ pub fn sign_action<'a>(
     signed: &HashSet<Fingerprint>,
     signing: &HashSet<Fingerprint>,
     recovery_timelock: Option<u16>,
+    qr_bridge: bool,
 ) -> Element<'a, Message> {
     let title = t!("psbt-select-signing-device");
 
@@ -539,6 +540,14 @@ pub fn sign_action<'a>(
             modal::device_entry(fp, None::<&str>, alias, DeviceStatus::None, select_msg)
         }
     }));
+
+    // Stopgap support for QR code devices, see `crate::qr_bridge`.
+    if qr_bridge {
+        signers.push(modal::qr_device_entry(
+            t!("qr-bridge-sign"),
+            Some(|| Message::Spend(SpendTxMessage::SelectQrSigner)),
+        ));
+    }
 
     let signers = Column::from_vec(signers)
         .align_x(Alignment::Center)

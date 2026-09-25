@@ -27,6 +27,7 @@ pub fn general_section<'a>(
     cache: &'a cache::Cache,
     new_price_setting: &'a PriceSetting,
     currencies_list: &'a [Currency],
+    qr_bridge: bool,
     warning: Option<&'a Error>,
 ) -> Element<'a, Message> {
     let header = header(
@@ -42,8 +43,32 @@ pub fn general_section<'a>(
         Column::new()
             .spacing(20)
             .push(header)
-            .push(fiat_price(new_price_setting, currencies_list)),
+            .push(fiat_price(new_price_setting, currencies_list))
+            .push(qr_bridge_setting(qr_bridge)),
     )
+}
+
+/// Opt-in for the stopgap QR code devices support, see `crate::qr_bridge`.
+fn qr_bridge_setting<'a>(enabled: bool) -> Element<'a, Message> {
+    card::simple(
+        Row::new()
+            .spacing(10)
+            .align_y(Alignment::Center)
+            .push(text(t!("settings-qr-bridge")).bold())
+            .push(tooltip_custom(
+                text(t!("settings-qr-bridge-tooltip")),
+                icon::tooltip_icon(),
+                tooltip::Position::Bottom,
+            ))
+            .push(Space::with_width(Length::Fill))
+            .push(
+                Toggler::new(enabled)
+                    .on_toggle(|enabled| SettingsMessage::EnableQrBridge(enabled).into())
+                    .style(theme::toggler::primary),
+            ),
+    )
+    .width(Length::Fill)
+    .into()
 }
 
 pub fn fiat_price<'a>(

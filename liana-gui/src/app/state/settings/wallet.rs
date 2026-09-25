@@ -323,6 +323,8 @@ pub struct RegisterWalletModal {
     hws: HardwareWallets,
     registered: HashSet<Fingerprint>,
     processing: bool,
+    /// Whether to offer QR code devices, see `crate::qr_bridge`.
+    qr_bridge: bool,
 }
 
 impl RegisterWalletModal {
@@ -332,6 +334,7 @@ impl RegisterWalletModal {
             registered.insert(hw.fingerprint);
         }
         Self {
+            qr_bridge: crate::qr_bridge::is_enabled(&data_dir),
             data_dir: data_dir.clone(),
             warning: None,
             chosen_hw: None,
@@ -351,6 +354,7 @@ impl RegisterWalletModal {
             self.processing,
             self.chosen_hw,
             &self.registered,
+            self.qr_bridge,
         )
     }
 
@@ -393,6 +397,26 @@ impl RegisterWalletModal {
                             self.warning = Some(e)
                         }
                     }
+                }
+                Task::none()
+            }
+            Message::View(view::Message::Settings(view::SettingsMessage::RegisterOnQrDevice)) => {
+                self.processing = true;
+                self.warning = None;
+                Task::perform(
+                    crate::qr_bridge::register(
+                        self.wallet.name.clone(),
+                        self.wallet.main_descriptor.to_string(),
+                    ),
+                    |res| Message::View(view::SettingsMessage::QrDeviceRegistered(res).into()),
+                )
+            }
+            Message::View(view::Message::Settings(view::SettingsMessage::QrDeviceRegistered(
+                res,
+            ))) => {
+                self.processing = false;
+                if let Err(e) = res {
+                    self.warning = Some(Error::Unexpected(e));
                 }
                 Task::none()
             }

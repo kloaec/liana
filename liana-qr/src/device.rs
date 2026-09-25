@@ -115,3 +115,41 @@ impl std::fmt::Display for Device {
         })
     }
 }
+
+/// The device picked last time, remembered across bridge windows: Liana opens a new one for every
+/// action.
+pub fn load_last_used() -> Device {
+    last_used_path()
+        .and_then(|path| std::fs::read_to_string(path).ok())
+        .and_then(|id| Device::ALL.into_iter().find(|d| d.id() == id.trim()))
+        .unwrap_or_default()
+}
+
+pub fn save_last_used(device: Device) {
+    let Some(path) = last_used_path() else {
+        return;
+    };
+    // Best effort: forgetting the choice only costs a click next time.
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, device.id());
+}
+
+fn last_used_path() -> Option<std::path::PathBuf> {
+    Some(dirs::config_dir()?.join("liana-qr").join("device"))
+}
+
+impl Device {
+    /// Stable identifier, for storage.
+    fn id(self) -> &'static str {
+        match self {
+            Device::SpecterDiy => "specter-diy",
+            Device::Krux => "krux",
+            Device::ColdcardQ => "coldcard-q",
+            Device::PassportPrime => "passport-prime",
+            Device::OtherUr => "other-ur",
+            Device::OtherBbqr => "other-bbqr",
+        }
+    }
+}

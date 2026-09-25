@@ -1577,6 +1577,12 @@ psbts-hide-confirmed => "Hide confirmed transactions"
 psbts-signatures-collected
 => "{ $count ->\n    [one] {$count}/{$threshold} signature collected\n   *[other] {$count}/{$threshold} signatures collected\n}";;
 
+qr-bridge-register => "Register on a QR code device"
+
+qr-bridge-scan-xpub => "Scan the key of a QR code device"
+
+qr-bridge-sign => "Sign with a QR code device"
+
 receive-address-label-placeholder => "Enter an address label"
 
 receive-derivation-index => "Derivation index:"
@@ -1693,6 +1699,11 @@ settings-network => "Network:"
 settings-not-running => "Not running"
 
 settings-other-formats => "Other formats"
+
+settings-qr-bridge => "QR code signing devices:"
+
+settings-qr-bridge-tooltip
+=> "Experimental: sign, register the wallet and import keys with airgapped devices through QR codes (Specter DIY, Krux, Coldcard Q, Passport Prime). Needs the liana-qr bridge installed next to Liana and a camera.";;
 
 settings-rescan-success => "Successfully rescanned the blockchain"
 

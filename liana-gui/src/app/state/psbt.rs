@@ -196,6 +196,7 @@ impl PsbtState {
                     cache.network,
                     self.saved,
                     self.tx.recovery_timelock(),
+                    crate::qr_bridge::is_enabled(&cache.datadir_path),
                 );
                 let cmd = modal.load(daemon);
                 self.modal = Some(PsbtModal::Sign(modal));
@@ -469,6 +470,10 @@ pub struct SignModal {
     is_saved: bool,
     display_modal: bool,
     recovery_timelock: Option<u16>,
+    /// Whether to offer QR code devices, see `crate::qr_bridge`.
+    qr_bridge: bool,
+    /// Whether the QR code bridge is open.
+    qr_signing: bool,
 }
 
 impl SignModal {
@@ -479,8 +484,11 @@ impl SignModal {
         network: Network,
         is_saved: bool,
         recovery_timelock: Option<u16>,
+        qr_bridge: bool,
     ) -> Self {
         Self {
+            qr_bridge,
+            qr_signing: false,
             signing: HashSet::new(),
             hws: HardwareWallets::new(datadir_path, network).with_wallet(wallet.clone()),
             wallet,
@@ -532,8 +540,34 @@ impl Modal for SignModal {
                     |(fg, res)| Message::Signed(fg, res),
                 );
             }
+            Message::View(view::Message::Spend(view::SpendTxMessage::SelectQrSigner)) => {
+                if self.qr_signing {
+                    return Task::none();
+                }
+                self.qr_signing = true;
+                self.display_modal = false;
+                let psbt = tx.psbt.clone();
+                return Task::perform(crate::qr_bridge::sign(psbt.clone()), move |res| {
+                    match res {
+                        Ok(Some(signed)) => Message::Signed(
+                            crate::qr_bridge::new_signer(&psbt, &signed).unwrap_or_default(),
+                            Ok(signed),
+                        ),
+                        // Cancelled on the bridge: back to the device list, like a refusal on a
+                        // USB device.
+                        Ok(None) => Message::Signed(
+                            Fingerprint::default(),
+                            Err(Error::HardwareWallet(async_hwi::Error::UserRefused)),
+                        ),
+                        Err(e) => {
+                            Message::Signed(Fingerprint::default(), Err(Error::Unexpected(e)))
+                        }
+                    }
+                });
+            }
             Message::Signed(fingerprint, res) => {
                 self.signing.remove(&fingerprint);
+                self.qr_signing = false;
                 match res {
                     Err(e) => {
                         self.display_modal = true;
@@ -612,6 +646,7 @@ impl Modal for SignModal {
                     &self.signed,
                     &self.signing,
                     self.recovery_timelock,
+                    self.qr_bridge,
                 ),
             )
             .on_blur(Some(view::Message::Spend(view::SpendTxMessage::Cancel)))

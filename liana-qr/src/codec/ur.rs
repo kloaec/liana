@@ -46,14 +46,16 @@ impl std::fmt::Debug for Animation {
 }
 
 impl Animation {
-    pub fn new(data: &[u8], ur_type: UrType, max_fragment_len: usize) -> Result<Self, Error> {
+    pub fn new(data: &[u8], ur_type: UrType, max_fragment_len: usize) -> Self {
         let cbor = cbor_bytes(data);
-        let encoder = ur::Encoder::new(&cbor, max_fragment_len, ur_type.name())
-            .map_err(|e| Error::Malformed(format!("UR encoding: {e}")))?;
+        // Only an invalid type, an empty message or a null fragment length fail: our types are
+        // valid, and CBOR is never empty.
+        let encoder = ur::Encoder::new(&cbor, max_fragment_len.max(1), ur_type.name())
+            .expect("valid UR type and non-empty message");
         // A payload fitting one fragment is sent as a single-part UR, which every decoder accepts.
         let single = (encoder.fragment_count() == 1)
             .then(|| ur::encode(&cbor, &ur::Type::Custom(ur_type.name())).to_uppercase());
-        Ok(Self { encoder, single })
+        Self { encoder, single }
     }
 
     pub fn fragment_count(&self) -> usize {
@@ -338,7 +340,7 @@ mod tests {
     #[test]
     fn psbt_roundtrip_multipart() {
         let data: Vec<u8> = (0..3000u32).map(|i| (i % 256) as u8).collect();
-        let mut animation = Animation::new(&data, UrType::CryptoPsbt, 200).unwrap();
+        let mut animation = Animation::new(&data, UrType::CryptoPsbt, 200);
         assert!(animation.fragment_count() > 1);
         let mut decoder = Decoder::default();
         // Skip a few frames: the fountain parts must fill the gaps.
@@ -357,7 +359,7 @@ mod tests {
 
     #[test]
     fn single_part_bytes() {
-        let mut animation = Animation::new(b"wsh(pk(A))", UrType::Bytes, 200).unwrap();
+        let mut animation = Animation::new(b"wsh(pk(A))", UrType::Bytes, 200);
         let part = animation.next_part();
         assert_eq!(part.matches('/').count(), 1);
         let mut decoder = Decoder::default();

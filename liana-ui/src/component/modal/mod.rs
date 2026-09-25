@@ -560,6 +560,33 @@ where
     )
 }
 
+/// Entry using a QR code device, in device lists (stopgap QR bridge).
+pub fn qr_device_entry<'a, Message, M>(
+    label: impl Into<String>,
+    on_press: Option<M>,
+) -> Element<'a, Message>
+where
+    M: 'static + Fn() -> Message,
+    Message: Clone + 'static,
+{
+    button_entry(Tile::QrDevice, label, None::<String>, None, on_press)
+}
+
+/// Entry scanning the extended public key of a QR code device (stopgap QR bridge).
+pub fn scan_qr_xpub_entry<'a, Message, M>(on_press: Option<M>) -> Element<'a, Message>
+where
+    M: 'static + Fn() -> Message,
+    Message: Clone + 'static,
+{
+    button_entry(
+        Tile::QrDevice,
+        t!("qr-bridge-scan-xpub"),
+        None::<String>,
+        None,
+        on_press,
+    )
+}
+
 /// Entry generating a key stored on this computer.
 pub fn generate_hot_key_entry<'a, Message, M>(on_press: Option<M>) -> Element<'a, Message>
 where

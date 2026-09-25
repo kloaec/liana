@@ -1228,6 +1228,7 @@ pub fn register_wallet_modal<'a>(
     processing: bool,
     chosen_hw: Option<usize>,
     registered: &HashSet<Fingerprint>,
+    qr_bridge: bool,
 ) -> Element<'a, Message> {
     let signers = hws
         .iter()
@@ -1253,6 +1254,13 @@ pub fn register_wallet_modal<'a>(
                 move || Message::SelectHardwareWallet(i),
             ))
         });
+    // Stopgap support for QR code devices, see `crate::qr_bridge`.
+    let signers = signers.push_maybe(qr_bridge.then(|| {
+        liana_ui::component::modal::qr_device_entry(
+            t!("qr-bridge-register"),
+            (!processing).then_some(|| SettingsMessage::RegisterOnQrDevice.into()),
+        )
+    }));
 
     let card_content = Column::new()
         .push(

@@ -103,7 +103,13 @@ impl SettingsUI<Message> for LianaSettingsUI {
     ) -> Task<Message> {
         match &message {
             Message::View(view::Message::Settings(view::SettingsMessage::GeneralSection)) => {
-                self.setting = Some(general::GeneralSettingsState::new(self.wallet.clone()).into());
+                self.setting = Some(
+                    general::GeneralSettingsState::new(
+                        self.wallet.clone(),
+                        crate::qr_bridge::is_enabled(&cache.datadir_path),
+                    )
+                    .into(),
+                );
                 let wallet = self.wallet.clone();
                 self.setting
                     .as_mut()

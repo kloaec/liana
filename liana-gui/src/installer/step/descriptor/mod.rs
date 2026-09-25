@@ -270,12 +270,15 @@ pub struct RegisterDescriptor {
     /// whether a signing device is used, to explicit this step is not required if the user isn't
     /// using a signing device.
     created_desc: bool,
+    /// Whether to offer QR code devices, see `crate::qr_bridge`.
+    qr_bridge: bool,
 }
 
 impl RegisterDescriptor {
     fn new(created_desc: bool) -> Self {
         Self {
             created_desc,
+            qr_bridge: false,
             descriptor: Default::default(),
             processing: Default::default(),
             chosen_hw: Default::default(),
@@ -303,6 +306,7 @@ impl Step for RegisterDescriptor {
             self.done = false;
         }
         self.descriptor.clone_from(&ctx.descriptor);
+        self.qr_bridge = crate::qr_bridge::is_enabled(&ctx.liana_directory);
         let mut map = HashMap::new();
         for key in ctx.keys.values().filter(|k| !k.name.is_empty()) {
             map.insert(key.master_fingerprint, key.name.clone());
@@ -356,6 +360,24 @@ impl Step for RegisterDescriptor {
                     }
                 }
             }
+            Message::RegisterOnQrDevice => {
+                if let Some(descriptor) = &self.descriptor {
+                    self.processing = true;
+                    self.error = None;
+                    return Task::perform(
+                        crate::qr_bridge::register(wallet_name(descriptor), descriptor.to_string()),
+                        Message::QrDeviceRegistered,
+                    );
+                }
+            }
+            Message::QrDeviceRegistered(res) => {
+                self.processing = false;
+                match res {
+                    // The user confirmed on the bridge: that's the acknowledgement of this step.
+                    Ok(registered) => self.done |= registered,
+                    Err(e) => self.error = Some(Error::Unexpected(e)),
+                }
+            }
             Message::Reload => {
                 return self.load();
             }
@@ -367,7 +389,8 @@ impl Step for RegisterDescriptor {
         Task::none()
     }
     fn skip(&self, ctx: &Context) -> bool {
-        !ctx.hw_is_used
+        // Keys of QR code devices are imported as plain xpubs: keep the step when they're enabled.
+        !ctx.hw_is_used && !crate::qr_bridge::is_enabled(&ctx.liana_directory)
     }
     fn apply(&mut self, ctx: &mut Context) -> bool {
         for (fingerprint, kind, token) in &self.hmacs {
@@ -402,6 +425,7 @@ impl Step for RegisterDescriptor {
             self.chosen_hw,
             self.done,
             self.created_desc,
+            self.qr_bridge,
         )
     }
 }

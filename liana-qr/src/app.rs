@@ -1,12 +1,12 @@
-use std::{path::PathBuf, str::FromStr, time::Duration};
+use std::{io::Write, time::Duration};
 
 use iced::{widget::image, Subscription, Task};
-use liana_ui::component::form;
-use miniscript::{bitcoin::Psbt, descriptor::DescriptorPublicKey, Descriptor};
+use miniscript::bitcoin::{NetworkKind, Psbt};
 
 use crate::{
     codec::{self, Animation, Density, ExtendedKey, Payload, Scanned, Scanner},
     device::Device,
+    protocol::Request,
     psbt::merge_signatures,
     scan::{self, CameraEvent},
 };
@@ -20,58 +20,30 @@ pub struct App {
     pub device: Device,
     pub density: Density,
     pub screen: Screen,
+    /// The answer handed to Liana, once there is one.
+    pub answer: Option<String>,
 }
 
 // Screen states are few and short-lived: their size doesn't matter.
 #[allow(clippy::large_enum_variant)]
 pub enum Screen {
-    Home,
-    Sign(Sign),
-    Register(Register),
-    Key(Key),
-}
-
-#[allow(clippy::large_enum_variant)]
-pub enum Sign {
-    Load {
-        error: Option<String>,
-    },
-    Show {
-        psbt: Psbt,
-        qr: AnimatedQr,
-    },
-    Scan {
-        psbt: Psbt,
-        scan: ScanState,
-    },
-    Done {
-        psbt: Psbt,
-        added: usize,
-        saved: Option<PathBuf>,
-        error: Option<String>,
-    },
-}
-
-#[allow(clippy::large_enum_variant)]
-pub enum Register {
-    Edit {
-        name: form::Value<String>,
-        descriptor: form::Value<String>,
-    },
-    Show {
+    /// Show the PSBT to the device.
+    SignShow { psbt: Psbt, qr: AnimatedQr },
+    /// Scan the device's signed answer.
+    SignScan { psbt: Psbt, scan: ScanState },
+    /// Show the descriptor to the device.
+    Register {
         name: String,
         descriptor: String,
         qr: AnimatedQr,
     },
-}
-
-#[allow(clippy::large_enum_variant)]
-pub enum Key {
-    Scan(ScanState),
-    Done {
-        keys: Vec<ExtendedKey>,
-        copied: Option<usize>,
+    /// Scan an extended public key.
+    KeyScan {
+        network: NetworkKind,
+        scan: ScanState,
     },
+    /// The device shared several keys: let the user pick one.
+    KeyChoose { keys: Vec<ExtendedKey> },
 }
 
 /// The QR code currently displayed, and the animation producing the next ones.
@@ -83,17 +55,15 @@ pub struct AnimatedQr {
 }
 
 impl AnimatedQr {
-    fn new(payload: Payload<'_>, device: Device, density: Density) -> Result<Self, String> {
-        let animation =
-            Animation::new(payload, device.transport(), density).map_err(|e| e.to_string())?;
+    fn new(payload: Payload<'_>, device: Device, density: Density) -> Self {
         let mut qr = Self {
-            animation,
+            animation: Animation::new(payload, device.transport(), density),
             image: None,
             position: 0,
             error: None,
         };
         qr.advance();
-        Ok(qr)
+        qr
     }
 
     fn advance(&mut self) {
@@ -130,59 +100,54 @@ impl ScanState {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Flow {
-    Sign,
-    Register,
-    Key,
-}
-
 #[derive(Debug, Clone)]
 pub enum Message {
-    Open(Flow),
+    /// Go back a step, or cancel from the first one.
     Previous,
     DeviceSelected(Device),
     DensitySelected(Density),
     Tick,
-    // Inputs.
-    LoadPsbtFile,
-    LoadDescriptorFile,
-    PsbtLoaded(Result<String, String>),
-    DescriptorLoaded(Result<String, String>),
-    PastePsbt,
-    NameEdited(String),
-    DescriptorEdited(String),
-    ShowRegistration,
-    // Scanning.
     StartScan,
     Camera(CameraEvent),
     LoadImage,
     ImageDecoded(Result<Vec<String>, String>),
-    // Outputs.
-    SavePsbt,
-    PsbtSaved(Result<Option<PathBuf>, String>),
-    CopyPsbt,
-    CopyKey(usize),
-    SignWithAnotherDevice,
-    Finish,
+    SelectKey(usize),
+    /// The descriptor was registered on the device.
+    Registered,
 }
 
 impl App {
-    /// Start on the home screen, or directly on signing when given a PSBT file.
-    pub fn new(psbt_path: Option<PathBuf>) -> (Self, Task<Message>) {
-        let mut app = Self {
-            device: Device::default(),
-            density: Density::default(),
-            screen: Screen::Home,
+    pub fn new(request: Request) -> (Self, Task<Message>) {
+        let device = crate::device::load_last_used();
+        let density = Density::default();
+        let screen = match request {
+            Request::Sign(psbt) => Screen::SignShow {
+                qr: AnimatedQr::new(Payload::Psbt(&psbt), device, density),
+                psbt,
+            },
+            Request::Register { name, descriptor } => Screen::Register {
+                qr: AnimatedQr::new(
+                    Payload::Text(&device.registration_text(&name, &descriptor)),
+                    device,
+                    density,
+                ),
+                name,
+                descriptor,
+            },
+            Request::Xpub(network) => Screen::KeyScan {
+                network,
+                scan: ScanState::default(),
+            },
         };
-        let task = match psbt_path {
-            Some(path) => {
-                app.screen = Screen::Sign(Sign::Load { error: None });
-                app.update(Message::PsbtLoaded(read_text_file(&path)))
-            }
-            None => Task::none(),
-        };
-        (app, task)
+        (
+            Self {
+                device,
+                density,
+                screen,
+                answer: None,
+            },
+            Task::none(),
+        )
     }
 
     pub fn title(&self) -> String {
@@ -192,12 +157,11 @@ impl App {
     pub fn subscription(&self) -> Subscription<Message> {
         let animating = matches!(
             &self.screen,
-            Screen::Sign(Sign::Show { qr, .. }) | Screen::Register(Register::Show { qr, .. })
-                if qr.frame_count() > 1
+            Screen::SignShow { qr, .. } | Screen::Register { qr, .. } if qr.frame_count() > 1
         );
         let scanning = matches!(
             &self.screen,
-            Screen::Sign(Sign::Scan { .. }) | Screen::Key(Key::Scan(_))
+            Screen::SignScan { .. } | Screen::KeyScan { .. }
         );
         Subscription::batch([
             if animating {
@@ -216,20 +180,10 @@ impl App {
 
     pub fn update(&mut self, message: Message) -> Task<Message> {
         match message {
-            Message::Open(Flow::Sign) => self.screen = Screen::Sign(Sign::Load { error: None }),
-            Message::Open(Flow::Register) => {
-                self.screen = Screen::Register(Register::Edit {
-                    name: form::Value {
-                        value: "Liana".to_string(),
-                        ..Default::default()
-                    },
-                    descriptor: form::Value::default(),
-                })
-            }
-            Message::Open(Flow::Key) => self.screen = Screen::Key(Key::Scan(ScanState::default())),
-            Message::Previous => self.previous(),
+            Message::Previous => return self.previous(),
             Message::DeviceSelected(device) => {
                 self.device = device;
+                crate::device::save_last_used(device);
                 self.rebuild_qr();
             }
             Message::DensitySelected(density) => {
@@ -237,96 +191,15 @@ impl App {
                 self.rebuild_qr();
             }
             Message::Tick => {
-                if let Screen::Sign(Sign::Show { qr, .. })
-                | Screen::Register(Register::Show { qr, .. }) = &mut self.screen
+                if let Screen::SignShow { qr, .. } | Screen::Register { qr, .. } = &mut self.screen
                 {
                     qr.advance();
                 }
             }
-            Message::LoadPsbtFile => {
-                return Task::perform(
-                    pick_text_file("PSBT", &["psbt", "txt"]),
-                    Message::PsbtLoaded,
-                )
-            }
-            Message::PastePsbt => {
-                return iced::clipboard::read().map(|text| {
-                    Message::PsbtLoaded(text.ok_or_else(|| "The clipboard is empty.".to_string()))
-                })
-            }
-            Message::PsbtLoaded(result) => {
-                if let Screen::Sign(sign) = &mut self.screen {
-                    match result.and_then(|text| parse_psbt(&text)) {
-                        Ok(psbt) => {
-                            match AnimatedQr::new(Payload::Psbt(&psbt), self.device, self.density) {
-                                Ok(qr) => *sign = Sign::Show { psbt, qr },
-                                Err(e) => *sign = Sign::Load { error: Some(e) },
-                            }
-                        }
-                        Err(e) => *sign = Sign::Load { error: Some(e) },
-                    }
-                }
-            }
-            Message::LoadDescriptorFile => {
-                return Task::perform(
-                    pick_text_file("Descriptor", &["txt", "descriptor"]),
-                    Message::DescriptorLoaded,
-                )
-            }
-            Message::DescriptorLoaded(Ok(text)) => {
-                return self.update(Message::DescriptorEdited(text.trim().to_string()))
-            }
-            Message::DescriptorLoaded(Err(e)) => {
-                if let Screen::Register(Register::Edit { descriptor, .. }) = &mut self.screen {
-                    descriptor.warning = Some(e);
-                    descriptor.valid = false;
-                }
-            }
-            Message::NameEdited(value) => {
-                if let Screen::Register(Register::Edit { name, .. }) = &mut self.screen {
-                    // Specter separates the name from the descriptor with '&'.
-                    name.valid = !value.trim().is_empty() && !value.contains('&');
-                    name.value = value;
-                }
-            }
-            Message::DescriptorEdited(value) => {
-                if let Screen::Register(Register::Edit { descriptor, .. }) = &mut self.screen {
-                    let value = value.trim().to_string();
-                    descriptor.valid = value.is_empty()
-                        || Descriptor::<DescriptorPublicKey>::from_str(&value).is_ok();
-                    descriptor.warning = None;
-                    descriptor.value = value;
-                }
-            }
-            Message::ShowRegistration => {
-                if let Screen::Register(Register::Edit { name, descriptor }) = &mut self.screen {
-                    let text = self
-                        .device
-                        .registration_text(name.value.trim(), &descriptor.value);
-                    match AnimatedQr::new(Payload::Text(&text), self.device, self.density) {
-                        Ok(qr) => {
-                            self.screen = Screen::Register(Register::Show {
-                                name: name.value.trim().to_string(),
-                                descriptor: descriptor.value.clone(),
-                                qr,
-                            })
-                        }
-                        Err(e) => {
-                            descriptor.warning = Some(e);
-                            descriptor.valid = false;
-                        }
-                    }
-                }
-            }
             Message::StartScan => {
-                if let Screen::Sign(sign @ Sign::Show { .. }) = &mut self.screen {
-                    let Sign::Show { psbt, .. } =
-                        std::mem::replace(sign, Sign::Load { error: None })
-                    else {
-                        unreachable!()
-                    };
-                    *sign = Sign::Scan {
-                        psbt,
+                if let Screen::SignShow { psbt, .. } = &self.screen {
+                    self.screen = Screen::SignScan {
+                        psbt: psbt.clone(),
                         scan: ScanState::default(),
                     };
                 }
@@ -341,7 +214,7 @@ impl App {
                     scan.camera_error = Some(e);
                 }
             }
-            Message::Camera(CameraEvent::Decoded(content)) => self.on_scanned(&[content]),
+            Message::Camera(CameraEvent::Decoded(content)) => return self.on_scanned(&[content]),
             Message::LoadImage => {
                 return Task::perform(
                     async {
@@ -361,120 +234,65 @@ impl App {
                         scan.error = Some("No QR code found in this picture.".into());
                     }
                 }
-                self.on_scanned(&contents);
+                return self.on_scanned(&contents);
             }
             Message::ImageDecoded(Err(e)) => {
                 if let Some(scan) = self.scan_state() {
                     scan.error = Some(e);
                 }
             }
-            Message::SavePsbt => {
-                if let Screen::Sign(Sign::Done { psbt, .. }) = &self.screen {
-                    let text = psbt.to_string();
-                    return Task::perform(
-                        async move {
-                            let Some(file) = rfd::AsyncFileDialog::new()
-                                .set_file_name("signed.psbt")
-                                .save_file()
-                                .await
-                            else {
-                                return Ok(None);
-                            };
-                            std::fs::write(file.path(), text)
-                                .map(|_| Some(file.path().to_path_buf()))
-                                .map_err(|e| e.to_string())
-                        },
-                        Message::PsbtSaved,
-                    );
-                }
-            }
-            Message::PsbtSaved(result) => {
-                if let Screen::Sign(Sign::Done { saved, error, .. }) = &mut self.screen {
-                    match result {
-                        Ok(path) => {
-                            *saved = path.or(saved.take());
-                            *error = None;
-                        }
-                        Err(e) => *error = Some(format!("Cannot save the file: {e}")),
-                    }
-                }
-            }
-            Message::CopyPsbt => {
-                if let Screen::Sign(Sign::Done { psbt, .. }) = &self.screen {
-                    return iced::clipboard::write(psbt.to_string());
-                }
-            }
-            Message::CopyKey(i) => {
-                if let Screen::Key(Key::Done { keys, copied }) = &mut self.screen {
+            Message::SelectKey(i) => {
+                if let Screen::KeyChoose { keys } = &self.screen {
                     if let Some(key) = keys.get(i) {
-                        *copied = Some(i);
-                        return iced::clipboard::write(key.to_liana());
+                        return self.respond(key.to_liana());
                     }
                 }
             }
-            Message::SignWithAnotherDevice => {
-                if let Screen::Sign(sign @ Sign::Done { .. }) = &mut self.screen {
-                    let Sign::Done { psbt, .. } =
-                        std::mem::replace(sign, Sign::Load { error: None })
-                    else {
-                        unreachable!()
-                    };
-                    *sign = match AnimatedQr::new(Payload::Psbt(&psbt), self.device, self.density) {
-                        Ok(qr) => Sign::Show { psbt, qr },
-                        Err(e) => Sign::Load { error: Some(e) },
-                    };
-                }
-            }
-            Message::Finish => self.screen = Screen::Home,
+            Message::Registered => return self.respond(crate::protocol::REGISTERED.to_string()),
         }
         Task::none()
     }
 
-    fn previous(&mut self) {
-        self.screen = match std::mem::replace(&mut self.screen, Screen::Home) {
-            Screen::Sign(Sign::Scan { psbt, .. }) => {
-                match AnimatedQr::new(Payload::Psbt(&psbt), self.device, self.density) {
-                    Ok(qr) => Screen::Sign(Sign::Show { psbt, qr }),
-                    Err(e) => Screen::Sign(Sign::Load { error: Some(e) }),
-                }
+    /// Hand the result to Liana and close.
+    fn respond(&mut self, answer: String) -> Task<Message> {
+        // Tests check the answer rather than the process output.
+        if !cfg!(test) {
+            let mut stdout = std::io::stdout();
+            if let Err(e) = writeln!(stdout, "{answer}").and_then(|_| stdout.flush()) {
+                eprintln!("liana-qr: cannot answer Liana: {e}");
             }
-            Screen::Sign(Sign::Show { .. }) => Screen::Sign(Sign::Load { error: None }),
-            Screen::Register(Register::Show {
-                name, descriptor, ..
-            }) => Screen::Register(Register::Edit {
-                name: form::Value {
-                    value: name,
-                    ..Default::default()
-                },
-                descriptor: form::Value {
-                    value: descriptor,
-                    ..Default::default()
-                },
-            }),
-            Screen::Key(Key::Done { .. }) => Screen::Key(Key::Scan(ScanState::default())),
-            _ => Screen::Home,
-        };
+        }
+        self.answer = Some(answer);
+        iced::exit()
+    }
+
+    fn previous(&mut self) -> Task<Message> {
+        match &self.screen {
+            Screen::SignScan { psbt, .. } => {
+                self.screen = Screen::SignShow {
+                    qr: AnimatedQr::new(Payload::Psbt(psbt), self.device, self.density),
+                    psbt: psbt.clone(),
+                };
+                Task::none()
+            }
+            // First step: back to Liana, without an answer.
+            _ => iced::exit(),
+        }
     }
 
     /// Redraw the QR code after the format or density changed.
     fn rebuild_qr(&mut self) {
         match &mut self.screen {
-            Screen::Sign(Sign::Show { psbt, qr }) => {
-                match AnimatedQr::new(Payload::Psbt(psbt), self.device, self.density) {
-                    Ok(new) => *qr = new,
-                    Err(e) => qr.error = Some(e),
-                }
+            Screen::SignShow { psbt, qr } => {
+                *qr = AnimatedQr::new(Payload::Psbt(psbt), self.device, self.density);
             }
-            Screen::Register(Register::Show {
+            Screen::Register {
                 name,
                 descriptor,
                 qr,
-            }) => {
+            } => {
                 let text = self.device.registration_text(name, descriptor);
-                match AnimatedQr::new(Payload::Text(&text), self.device, self.density) {
-                    Ok(new) => *qr = new,
-                    Err(e) => qr.error = Some(e),
-                }
+                *qr = AnimatedQr::new(Payload::Text(&text), self.device, self.density);
             }
             _ => {}
         }
@@ -482,15 +300,15 @@ impl App {
 
     fn scan_state(&mut self) -> Option<&mut ScanState> {
         match &mut self.screen {
-            Screen::Sign(Sign::Scan { scan, .. }) | Screen::Key(Key::Scan(scan)) => Some(scan),
+            Screen::SignScan { scan, .. } | Screen::KeyScan { scan, .. } => Some(scan),
             _ => None,
         }
     }
 
-    fn on_scanned(&mut self, contents: &[String]) {
+    fn on_scanned(&mut self, contents: &[String]) -> Task<Message> {
         for content in contents {
             let Some(scan) = self.scan_state() else {
-                return;
+                break;
             };
             let scanned = match scan.scanner.receive(content) {
                 Ok(Some(scanned)) => scanned,
@@ -503,10 +321,7 @@ impl App {
             // A transfer completed: start afresh if what follows doesn't fit.
             scan.scanner = Scanner::default();
             match &mut self.screen {
-                Screen::Sign(sign @ Sign::Scan { .. }) => {
-                    let Sign::Scan { psbt, scan } = sign else {
-                        unreachable!()
-                    };
+                Screen::SignScan { psbt, scan } => {
                     let Scanned::Psbt(signed) = scanned else {
                         scan.error = Some(
                             "This is not a transaction. Show the signed PSBT on the device.".into(),
@@ -515,20 +330,11 @@ impl App {
                     };
                     let mut merged = psbt.clone();
                     match merge_signatures(&mut merged, &signed) {
-                        Ok(added) => {
-                            *sign = Sign::Done {
-                                psbt: merged,
-                                added,
-                                saved: None,
-                                error: None,
-                            };
-                            return;
-                        }
+                        Ok(_) => return self.respond(merged.to_string()),
                         Err(e) => scan.error = Some(e.to_string()),
                     }
                 }
-                Screen::Key(key @ Key::Scan(_)) => {
-                    let Key::Scan(scan) = key else { unreachable!() };
+                Screen::KeyScan { network, scan } => {
                     let keys = match scanned {
                         Scanned::Keys(keys) => Ok(keys),
                         Scanned::Text(text) => codec::parse_keys(&text).map_err(|e| e.to_string()),
@@ -536,18 +342,37 @@ impl App {
                             Err("This is a transaction, not an extended public key.".to_string())
                         }
                     };
-                    match keys {
+                    match keys.and_then(|keys| usable_keys(keys, *network)) {
+                        Ok(keys) if keys.len() == 1 => return self.respond(keys[0].to_liana()),
                         Ok(keys) => {
-                            *key = Key::Done { keys, copied: None };
-                            return;
+                            self.screen = Screen::KeyChoose { keys };
+                            break;
                         }
                         Err(e) => scan.error = Some(e),
                     }
                 }
-                _ => return,
+                _ => break,
             }
         }
+        Task::none()
     }
+}
+
+/// Keep the keys for the wallet's network, Liana's standard path first.
+fn usable_keys(keys: Vec<ExtendedKey>, network: NetworkKind) -> Result<Vec<ExtendedKey>, String> {
+    let mut keys: Vec<ExtendedKey> = keys
+        .into_iter()
+        .filter(|k| k.xpub.network == network)
+        .collect();
+    if keys.is_empty() {
+        return Err("This key is for another network than the wallet.".into());
+    }
+    // A single key on Liana's path needs no choice: drop the other script types the device
+    // advertised (single-sig, nested segwit...).
+    if keys.iter().filter(|k| k.liana_account().is_some()).count() == 1 {
+        keys.retain(|k| k.liana_account().is_some());
+    }
+    Ok(keys)
 }
 
 /// Draw a QR code as an image of at most `max_size` pixels, with the standard 4 modules quiet
@@ -578,93 +403,88 @@ fn render_qr(content: &str, max_size: u32) -> Result<image::Handle, qrcode::type
     Ok(image::Handle::from_rgba(size as u32, size as u32, rgba))
 }
 
-/// A PSBT exported by Liana is base64 text; also accept a binary PSBT file.
-fn parse_psbt(text: &str) -> Result<Psbt, String> {
-    let psbt = Psbt::from_str(text.trim()).map_err(|e| format!("This is not a valid PSBT: {e}"))?;
-    if psbt.inputs.is_empty() {
-        return Err("This PSBT has no input.".into());
-    }
-    Ok(psbt)
-}
-
-async fn pick_text_file(name: &str, extensions: &[&str]) -> Result<String, String> {
-    let file = rfd::AsyncFileDialog::new()
-        .add_filter(name, extensions)
-        .pick_file()
-        .await
-        .ok_or_else(|| "No file selected.".to_string())?;
-    read_text_file(file.path())
-}
-
-/// Read a text file, converting a binary PSBT to base64.
-fn read_text_file(path: &std::path::Path) -> Result<String, String> {
-    let bytes = std::fs::read(path).map_err(|e| format!("Cannot read {}: {e}", path.display()))?;
-    if bytes.starts_with(b"psbt\xff") {
-        use base64::Engine;
-        return Ok(base64::engine::general_purpose::STANDARD.encode(bytes));
-    }
-    String::from_utf8(bytes).map_err(|_| "This file is not a text file.".to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::codec::tests_support::TEST_PSBT;
+    use std::str::FromStr;
 
-    const LIANA_DESCRIPTOR: &str = "wsh(or_d(multi(2,[f714c228/48'/1'/0'/2']tpubDEwJnTwfKoMvu8AXXBPydBVWDpzNP5tatjjZ56q4TQioGL7iL9xzTbMoCCQ3tfGihtff7vtR4xsjcRuhZ7HWARVAkGZ1HZcpBhVdou76k7j/<0;1>/*,[2522f23c/48'/1'/0'/2']tpubDEoTU4bDW1EXN1rnLXnRfue1a7DeqjJcs39PkEeLcVXhVKzCnFo9yQX2EeeXJ6kh4hgbz5o9v7YAc1EE97AEJpJbKNmDxE3ZQo4msGPSp2J/<0;1>/*),and_v(v:thresh(1,pkh([f714c228/48'/1'/0'/2']tpubDEwJnTwfKoMvu8AXXBPydBVWDpzNP5tatjjZ56q4TQioGL7iL9xzTbMoCCQ3tfGihtff7vtR4xsjcRuhZ7HWARVAkGZ1HZcpBhVdou76k7j/<2;3>/*),a:pkh([2522f23c/48'/1'/0'/2']tpubDEoTU4bDW1EXN1rnLXnRfue1a7DeqjJcs39PkEeLcVXhVKzCnFo9yQX2EeeXJ6kh4hgbz5o9v7YAc1EE97AEJpJbKNmDxE3ZQo4msGPSp2J/<2;3>/*)),older(65535))))#9s8ekrce";
+    const XPUB: &str = "tpubDEwJnTwfKoMvu8AXXBPydBVWDpzNP5tatjjZ56q4TQioGL7iL9xzTbMoCCQ3tfGihtff7vtR4xsjcRuhZ7HWARVAkGZ1HZcpBhVdou76k7j";
 
     #[test]
-    fn register_liana_descriptor() {
-        let (mut app, _) = App::new(None);
-        let _ = app.update(Message::Open(Flow::Register));
-        let _ = app.update(Message::DescriptorEdited(LIANA_DESCRIPTOR.to_string()));
-        let Screen::Register(Register::Edit { descriptor, .. }) = &app.screen else {
-            panic!("expected the edit screen");
+    fn sign_stays_on_scan_until_new_signatures() {
+        let psbt = Psbt::from_str(TEST_PSBT).unwrap();
+        let (mut app, _) = App::new(Request::Sign(psbt.clone()));
+        let _ = app.update(Message::StartScan);
+        // The unsigned PSBT scanned back adds nothing: stay and explain.
+        let _ = app.update(Message::Camera(CameraEvent::Decoded(psbt.to_string())));
+        let Screen::SignScan { scan, .. } = &app.screen else {
+            panic!("expected the scan screen");
         };
-        assert!(descriptor.valid);
-
-        let _ = app.update(Message::ShowRegistration);
-        let Screen::Register(Register::Show { qr, .. }) = &app.screen else {
-            panic!("expected the QR screen");
-        };
-        // Long descriptors need an animation with the default Specter transport.
-        assert!(qr.frame_count() > 1);
-        assert!(qr.image.is_some());
+        assert!(scan.error.is_some());
+        let _ = app.update(Message::Previous);
+        assert!(matches!(app.screen, Screen::SignShow { .. }));
     }
 
     #[test]
-    fn invalid_descriptor_is_flagged() {
-        let (mut app, _) = App::new(None);
-        let _ = app.update(Message::Open(Flow::Register));
-        let _ = app.update(Message::DescriptorEdited("wsh(pk(nope))".to_string()));
-        let Screen::Register(Register::Edit { descriptor, .. }) = &app.screen else {
-            panic!("expected the edit screen");
-        };
-        assert!(!descriptor.valid);
-    }
-
-    #[test]
-    fn sign_flow_merges_scanned_signatures() {
-        use crate::codec::tests_support::TEST_PSBT;
-        let (mut app, _) = App::new(None);
-        let _ = app.update(Message::Open(Flow::Sign));
-        let _ = app.update(Message::PsbtLoaded(Ok(TEST_PSBT.to_string())));
-        assert!(matches!(app.screen, Screen::Sign(Sign::Show { .. })));
+    fn sign_answers_the_merged_psbt() {
+        let psbt = Psbt::from_str(TEST_PSBT).unwrap();
+        let (mut app, _) = App::new(Request::Sign(psbt.clone()));
         let _ = app.update(Message::StartScan);
 
-        // The device answers with the same PSBT plus a signature, as a single base64 QR.
-        let mut signed = Psbt::from_str(TEST_PSBT).unwrap();
+        // Specter and Krux answer with the transaction and the signatures only.
+        let mut trimmed = Psbt::from_unsigned_tx(psbt.unsigned_tx.clone()).unwrap();
         let secp = miniscript::bitcoin::secp256k1::Secp256k1::new();
         let sk = miniscript::bitcoin::secp256k1::SecretKey::from_slice(&[3; 32]).unwrap();
         let msg = miniscript::bitcoin::secp256k1::Message::from_digest([4; 32]);
-        signed.inputs[0].partial_sigs.insert(
-            miniscript::bitcoin::PublicKey::new(sk.public_key(&secp)),
-            miniscript::bitcoin::ecdsa::Signature::sighash_all(secp.sign_ecdsa(&msg, &sk)),
+        let pk = miniscript::bitcoin::PublicKey::new(sk.public_key(&secp));
+        let sig = miniscript::bitcoin::ecdsa::Signature::sighash_all(secp.sign_ecdsa(&msg, &sk));
+        trimmed.inputs[0].partial_sigs.insert(pk, sig);
+        let _ = app.update(Message::Camera(CameraEvent::Decoded(trimmed.to_string())));
+
+        // Liana gets its full PSBT back, with the new signature.
+        let answer = Psbt::from_str(app.answer.as_deref().unwrap()).unwrap();
+        let mut expected = psbt;
+        expected.inputs[0].partial_sigs.insert(pk, sig);
+        assert_eq!(answer, expected);
+    }
+
+    #[test]
+    fn register_and_xpub_answers() {
+        let desc = "wsh(pk([f714c228/48'/1'/0'/2']tpubDEwJnTwfKoMvu8AXXBPydBVWDpzNP5tatjjZ56q4TQioGL7iL9xzTbMoCCQ3tfGihtff7vtR4xsjcRuhZ7HWARVAkGZ1HZcpBhVdou76k7j/<0;1>/*))";
+        let (mut app, _) = App::new(Request::Register {
+            name: "Liana".into(),
+            descriptor: desc.into(),
+        });
+        let _ = app.update(Message::Registered);
+        assert_eq!(app.answer.as_deref(), Some(crate::protocol::REGISTERED));
+
+        let (mut app, _) = App::new(Request::Xpub(NetworkKind::Test));
+        let _ = app.update(Message::Camera(CameraEvent::Decoded(format!(
+            "[f714c228/48h/1h/0h/2h]{XPUB}"
+        ))));
+        assert_eq!(
+            app.answer.as_deref(),
+            Some(format!("[f714c228/48'/1'/0'/2']{XPUB}").as_str())
         );
-        let _ = app.update(Message::Camera(CameraEvent::Decoded(signed.to_string())));
-        let Screen::Sign(Sign::Done { psbt, added, .. }) = &app.screen else {
-            panic!("expected the done screen");
-        };
-        assert_eq!(*added, 1);
-        assert_eq!(psbt, &signed);
+    }
+
+    #[test]
+    fn keys_are_filtered_by_network() {
+        let tpub = codec::parse_keys(&format!("[f714c228/48h/1h/0h/2h]{XPUB}")).unwrap();
+        assert_eq!(
+            usable_keys(tpub.clone(), NetworkKind::Test).unwrap().len(),
+            1
+        );
+        assert!(usable_keys(tpub, NetworkKind::Main).is_err());
+    }
+
+    #[test]
+    fn key_on_liana_path_is_preferred() {
+        let mut keys = codec::parse_keys(&format!("[f714c228/48h/1h/0h/2h]{XPUB}")).unwrap();
+        keys.extend(codec::parse_keys(&format!("[f714c228/84h/1h/0h]{XPUB}")).unwrap());
+        let usable = usable_keys(keys, NetworkKind::Test).unwrap();
+        assert_eq!(usable.len(), 1);
+        assert_eq!(usable[0].liana_account(), Some(0));
     }
 }
