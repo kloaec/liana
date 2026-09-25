@@ -63,15 +63,9 @@ Liana starts `liana-qr <request>` with piped stdin and stdout, and waits for it 
 
 ## Removing it
 
-Once Liana supports QR devices natively:
-
-1. Delete this directory and its line in the workspace `Cargo.toml`.
-2. Delete `liana-gui/src/qr_bridge.rs` and its call sites (`grep -rn qr_bridge liana-gui`):
-   - the `qr_bridge` field of the global settings,
-   - the General settings toggle,
-   - the entries in the sign, registration and key dialogs.
-3. Delete `Tile::QrDevice`, `qr_device_entry` and `scan_qr_xpub_entry` in liana-ui.
-4. Delete the `qr-bridge-*` and `settings-qr-bridge*` strings.
+The bridge is meant to go away once Liana supports QR devices natively. See
+[LIANA_CHANGES.md](LIANA_CHANGES.md) for every change made to Liana for it, file by file, and how to
+remove each one.
 
 ## Building
 
